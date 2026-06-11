@@ -20,4 +20,4 @@ COPY scripts ./scripts
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir .
 
-CMD ["sh", "-c", "SSE_PORT=${PORT:-3001} python -m mcp_agent_system.server"]
+CMD ["sh", "-c", "alembic upgrade head && SSE_PORT=${PORT:-3001} python -m mcp_agent_system.server"]
