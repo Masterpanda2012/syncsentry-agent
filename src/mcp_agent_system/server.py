@@ -226,6 +226,97 @@ def build_server() -> tuple[FastMCP, AgentOrchestrator, dict[str, Any]]:
     }
 
 
+_TOOL_SUMMARY = [
+    ("start_session", "Initialize an ActiveAgent + HistoryAgent pair"),
+    ("send_prompt", "Route a message to the Active Agent"),
+    ("get_context_usage", "Token consumption stats for a session"),
+    ("log_correction", "Record a correction, anchored on-chain (BGA)"),
+    ("transfer_context", "Trigger the context handoff protocol"),
+    ("get_session_state", "Full session snapshot"),
+    ("query_codebase", "Greptile-grounded codebase Q&A"),
+    ("create_invoice", "AllScale stablecoin invoice for usage"),
+]
+
+
+def _add_web_routes(app: Any) -> None:
+    """Attach a human-friendly landing page and health check to the SSE app."""
+    from starlette.requests import Request
+    from starlette.responses import HTMLResponse, JSONResponse
+    from starlette.routing import Route
+
+    async def healthz(_: Request) -> JSONResponse:
+        return JSONResponse({"status": "ok", "server": "mcp-agent-system"})
+
+    async def landing(request: Request) -> HTMLResponse:
+        base = str(request.base_url).rstrip("/")
+        sse_url = f"{base}/sse"
+        tools_html = "".join(
+            f"<tr><td><code>{name}</code></td><td>{desc}</td></tr>"
+            for name, desc in _TOOL_SUMMARY
+        )
+        mcp_json = (
+            '{\n  "mcpServers": {\n    "syncsentry": {\n'
+            f'      "url": "{sse_url}"\n'
+            "    }\n  }\n}"
+        )
+        html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SyncSentry MCP Server</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{ margin: 0; background: #0b0f17; color: #e6edf3;
+         font: 16px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif; }}
+  main {{ max-width: 760px; margin: 0 auto; padding: 48px 24px 64px; }}
+  h1 {{ font-size: 28px; margin: 0 0 4px; }}
+  h2 {{ font-size: 18px; margin: 32px 0 8px; }}
+  .ok {{ display: inline-block; padding: 2px 10px; border-radius: 999px;
+        background: #12351f; color: #3fb950; font-size: 13px; }}
+  .muted {{ color: #8b949e; }}
+  pre {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+        padding: 14px 16px; overflow-x: auto; font-size: 14px; }}
+  code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+  table {{ border-collapse: collapse; width: 100%; font-size: 14px; }}
+  td {{ border-top: 1px solid #21262d; padding: 7px 10px 7px 0; vertical-align: top; }}
+  a {{ color: #58a6ff; }}
+</style>
+</head>
+<body>
+<main>
+  <h1>SyncSentry <span class="muted">MCP Server</span></h1>
+  <p><span class="ok">&#9679; running</span></p>
+  <p class="muted">This is a Model Context Protocol server, not a website.
+  Connect to it from an MCP client (Cursor, Claude Desktop, etc.).</p>
+
+  <h2>Connect from Cursor / Claude</h2>
+  <p>Add this to your <code>mcp.json</code> (Cursor: Settings &rarr; MCP):</p>
+  <pre><code>{mcp_json}</code></pre>
+
+  <h2>Quick test from a terminal</h2>
+  <pre><code>curl -N {sse_url}</code></pre>
+  <p class="muted">A healthy server replies with an <code>event: endpoint</code>
+  line and keeps the connection open.</p>
+
+  <h2>Available tools</h2>
+  <table>{tools_html}</table>
+
+  <h2>Endpoints</h2>
+  <table>
+    <tr><td><code>GET /sse</code></td><td>MCP SSE connection endpoint</td></tr>
+    <tr><td><code>POST /messages/</code></td><td>MCP client message channel</td></tr>
+    <tr><td><code>GET /healthz</code></td><td>Health check (JSON)</td></tr>
+  </table>
+</main>
+</body>
+</html>"""
+        return HTMLResponse(html)
+
+    app.router.routes.insert(0, Route("/", landing, methods=["GET"]))
+    app.router.routes.insert(0, Route("/healthz", healthz, methods=["GET"]))
+
+
 def main() -> None:
     """CLI entrypoint. Selects stdio or SSE based on ``MCP_TRANSPORT``."""
     settings = get_settings()
@@ -234,7 +325,16 @@ def main() -> None:
         import uvicorn
 
         app = server.sse_app()
-        uvicorn.run(app, host=settings.sse_host, port=settings.sse_port)
+        _add_web_routes(app)
+        uvicorn.run(
+            app,
+            host=settings.sse_host,
+            port=settings.sse_port,
+            # Respect X-Forwarded-* from Cloud Run's proxy so generated
+            # URLs on the landing page use https and the public hostname.
+            proxy_headers=True,
+            forwarded_allow_ips="*",
+        )
     else:
         import anyio
 
